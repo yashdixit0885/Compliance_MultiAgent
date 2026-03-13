@@ -3,9 +3,12 @@ from typing import TypedDict, Literal
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+
+# ... (Keep your existing State and Node definitions)
 
 load_dotenv()
-
+memory = MemorySaver()
 # 1. Setup the "Committee"
 # Using temperature=0 for the Auditor to ensure consistent compliance checks
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
@@ -78,24 +81,39 @@ workflow.add_conditional_edges(
     }
 )
 
-app = workflow.compile()
+app = workflow.compile(
+    checkpointer=memory,
+    interrupt_after=["compliance"]
+)
 
 # --- 4. TEST IT ---
 if __name__ == "__main__":
-    # Test 1: The Failure Path (Prohibited Destination)
-    print("\n--- TEST: CRYPTO TRANSFER ---")
-    inputs = {"user_request": "Move $5,000 from Checking to my Crypto wallet"}
-    for output in app.stream(inputs):
-        print(output)
+    # A 'thread_id' represents a specific conversation or transaction ID
+    config = {"configurable": {"thread_id": "tx_999"}}
+    
+    inputs = {"user_request": "Move $8,000 from Checking to Savings"}
+    
+    print("\n--- STARTING TRANSACTION ---")
+    # We run the graph until it hits the breakpoint
+    for event in app.stream(inputs, config):
+        for node, state in event.items():
+            print(f"\nNode: {node}")
+            if node == "compliance":
+                print(f"Auditor Report: {state['compliance_report']}")
 
-    # Test 2: The Failure Path (Limit Exceeded)
-    print("\n--- TEST: LIMIT EXCEEDED ---")
-    inputs = {"user_request": "Move $50,000 from Checking to Savings"}
-    for output in app.stream(inputs):
-        print(output)
-        
-    # Test 3: The Success Path (Allowed Transaction)
-    print("\n--- TEST: ALLOWED TRANSACTION ---")
-    inputs = {"user_request": "Move $5,000 from Checking to Savings"}
-    for output in app.stream(inputs):
-        print(output)
+    # --- THE GRAPH IS NOW PAUSED ---
+    print("\n--- SYSTEM PAUSED: WAITING FOR HUMAN APPROVAL ---")
+    snapshot = app.get_state(config)
+    print(f"Current Status in Memory: {snapshot.values['status']}")
+    
+    # Simulate a human checking the dashboard and typing 'yes'
+    confirm = input("\nType 'YES' to finalize this transaction or 'NO' to cancel: ")
+    
+    if confirm.upper() == "YES":
+        print("\n--- RESUMING WORKFLOW ---")
+        # Passing 'None' as input tells LangGraph to just pick up where it left off
+        for event in app.stream(None, config):
+            print(event)
+        print("\n--- TRANSACTION COMPLETE ---")
+    else:
+        print("\n--- TRANSACTION ABORTED BY HUMAN ---")
